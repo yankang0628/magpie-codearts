@@ -69,7 +69,7 @@ function localIP() {
 // Authorization: SDK-HMAC-SHA256 Access=ak, SignedHeaders=…, Signature=…
 // over a canonical request of method, URI (each segment URL-encoded, a
 // trailing slash appended), sorted query, lower-cased sorted headers
-// (host and X-Sdk-Date among them), and the SHA-256 of JSON.stringify(body)
+// (host and X-Sdk-Date among them), and the SHA-256 of the exact request body
 // — an empty body's digest when there is none.
 
 const EMPTY_BODY_SHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -101,8 +101,8 @@ function sdkDate() {
 }
 
 // sign builds the headers that carry `headers` to `url` signed with ak/sk.
-// `data` is the request body as a value (hashed as JSON.stringify of it).
-function sign({ method, url, headers, ak, sk, data }) {
+// `bodyText` is the exact UTF-8 text sent over the wire.
+function sign({ method, url, headers, ak, sk, bodyText }) {
   const h = {}
   for (const [k, v] of new Headers(headers)) h[k.toLowerCase()] = String(v)
   if ((h["content-type"] ?? "").includes("multipart/form-data")) delete h["content-type"]
@@ -112,7 +112,7 @@ function sign({ method, url, headers, ak, sk, data }) {
   const keys = Object.keys(h).sort()
   const signedHeaders = keys.join(";")
   const canonicalHeaders = keys.map((k) => `${k}:${h[k]}\n`).join("")
-  const payload = data === undefined || data === null ? EMPTY_BODY_SHA256 : sha256hex(JSON.stringify(data))
+  const payload = bodyText === undefined ? EMPTY_BODY_SHA256 : sha256hex(bodyText)
   const canonical = [method.toUpperCase(), canonicalURI(url.pathname), canonicalQuery(url), canonicalHeaders, signedHeaders, payload].join("\n")
   const toSign = ["SDK-HMAC-SHA256", date, sha256hex(canonical)].join("\n")
   const signature = createHmac("sha256", sk).update(toSign).digest("hex")
@@ -128,8 +128,9 @@ async function callCodearts(url, { method = "GET", body, agentType, creds } = {}
   if (agentType) h["Agent-Type"] = agentType
   if (creds.security_token) h["X-Security-token"] = creds.security_token
   const u = new URL(url)
-  const headers = sign({ method, url: u, headers: h, ak: creds.access_key_id, sk: creds.secret_access_key, data: body })
-  const res = await fetch(u, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) })
+  const bodyText = body === undefined ? undefined : JSON.stringify(body)
+  const headers = sign({ method, url: u, headers: h, ak: creds.access_key_id, sk: creds.secret_access_key, bodyText })
+  const res = await fetch(u, { method, headers, body: bodyText })
   if (!res.ok) throw new Error(`${u.pathname}: ${STATUS_TEXT[res.status] ?? res.status} ${(await res.text().catch(() => "")).slice(0, 200)}`)
   return res.json()
 }
@@ -440,11 +441,7 @@ export async function CodeArtsPlugin({ client }) {
               model = JSON.parse(bodyText)?.model ?? ""
             } catch {}
             const u = new URL(url)
-            let data = null
-            try {
-              data = bodyText != null ? JSON.parse(bodyText) : null
-            } catch {}
-            const headers = sign({ method, url: u, headers: chatHeaders(model, creds), ak: creds.access_key_id, sk: creds.secret_access_key, data })
+            const headers = sign({ method, url: u, headers: chatHeaders(model, creds), ak: creds.access_key_id, sk: creds.secret_access_key, bodyText })
             const res = await fetch(u, { method, headers, body: bodyText, signal: opts.signal })
             if (!res.ok) {
               const text = await res.text().catch(() => "")
